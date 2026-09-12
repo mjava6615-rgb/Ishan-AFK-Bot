@@ -8,7 +8,7 @@
   "server": {
     "ip": "Nexus_SMP_MC.aternos.me",
     "port": 19478,
-    "version": "1.21.11"
+    "version": "1.21.1"
   },
   "position": {
     "enabled": true,
