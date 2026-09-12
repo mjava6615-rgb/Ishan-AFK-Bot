@@ -1,17 +1,17 @@
 const mineflayer = require('mineflayer');
 const { Movements, pathfinder, goals } = require('mineflayer-pathfinder');
 const { GoalBlock } = goals;
-const config = require('./settings.json');
 const express = require('express');
 const http = require('http');
+const https = require('https');
+const config = require('./settings.json');
 
 // ============================================================
-// EXPRESS SERVER - Keep Render/Aternos alive
+// EXPRESS SERVER & WEB DASHBOARD
 // ============================================================
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Bot state tracking
 let botState = {
   connected: false,
   lastActivity: Date.now(),
@@ -20,10 +20,12 @@ let botState = {
   errors: []
 };
 
-// Health check endpoint for monitoring
-// Health check endpoint for monitoring
+// Web Dashboard Route
 app.get('/', (req, res) => {
-  // "Blue Teal Shadow" Theme - Live Dashboard
+  const uptimeSeconds = Math.floor((Date.now() - botState.startTime) / 1000);
+  const statusColor = botState.connected ? '#2dd4bf' : '#f43f5e';
+  const statusText = botState.connected ? 'ONLINE' : 'OFFLINE';
+
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -38,9 +40,8 @@ app.get('/', (req, res) => {
             display: flex; 
             justify-content: center; 
             align-items: center; 
-            height: 100vh; 
+            min-height: 100vh; 
             margin: 0; 
-            overflow: hidden;
           }
           .container {
             background: #1e293b;
@@ -48,54 +49,209 @@ app.get('/', (req, res) => {
             border-radius: 20px;
             box-shadow: 0 0 50px rgba(45, 212, 191, 0.2);
             text-align: center;
-            width: 400px;
+            width: 350px;
             border: 1px solid #334155;
-            transition: box-shadow 0.3s ease;
           }
-          h1 { margin-bottom: 30px; font-size: 24px; color: #ccfbf1; display: flex; align-items: center; justify-content: center; gap: 10px; }
+          h1 { margin-bottom: 30px; font-size: 24px; color: #ccfbf1; }
           .stat-card {
             background: #0f172a;
             padding: 15px;
             margin: 15px 0;
             border-radius: 12px;
-            border-left: 5px solid #2dd4bf;
+            border-left: 5px solid ${statusColor};
             text-align: left;
-            box-shadow: 5px 5px 15px rgba(0, 0, 0, 0.3);
-            position: relative;
-            overflow: hidden;
           }
           .label { font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
-          .value { font-size: 18px; font-weight: bold; color: #2dd4bf; text-shadow: 0 0 10px rgba(45, 212, 191, 0.5); margin-top: 5px; }
+          .value { font-size: 18px; font-weight: bold; color: ${statusColor}; margin-top: 5px; }
           .status-dot { 
             height: 12px; width: 12px; 
             border-radius: 50%; 
             display: inline-block; 
             margin-right: 8px;
-            box-shadow: 0 0 10px currentColor;
-            transition: color 0.3s ease, box-shadow 0.3s ease;
-            background-color: currentColor; /* Use CSS for the dot color */
+            background-color: ${statusColor};
           }
-          /* Override specific IDs to set background color for the dot */
-          #live-indicator { background-color: currentColor; }
-          
-          .pulse { animation: pulse 2s infinite; }
-          @keyframes pulse {
-            0% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(1.1); }
-            100% { opacity: 1; transform: scale(1); }
-          }
-          .btn-guide {
-            display: inline-block; margin-top: 20px; padding: 12px 24px; 
-            background: #2dd4bf; color: #0f172a; text-decoration: none; 
-            border-radius: 8px; font-weight: bold; 
-            box-shadow: 0 0 15px rgba(45, 212, 191, 0.4);
-            transition: transform 0.2s;
-          }
-          .btn-guide:hover { transform: translateY(-2px); }
-          .connection-bar {
-            height: 4px; background: #334155; width: 100%; margin-top: 20px; border-radius: 2px; overflow: hidden;
-          }
-          .connection-fill {
-            height: 100%; width: 100%; background: #2dd4bf;
-            animation: loading 2s infinite linear;
-... (800 lines left)
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>${config.name}</h1>
+          <div class="stat-card">
+            <div class="label">Status</div>
+            <div class="value"><span class="status-dot"></span>${statusText}</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Server</div>
+            <div class="value">${config.server.ip}:${config.server.port}</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Uptime</div>
+            <div class="value">${uptimeSeconds}s</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Reconnect Attempts</div>
+            <div class="value">${botState.reconnectAttempts}</div>
+          </div>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+app.listen(PORT, () => {
+  console.log(`[Dashboard] Web server running on port ${PORT}`);
+});
+
+// ============================================================
+// DISCORD WEBHOOK LOGGING
+// ============================================================
+function sendDiscordWebhook(title, description, color = 3066993) {
+  if (!config.discord || !config.discord.enabled || !config.discord.webhookUrl) return;
+
+  const url = new URL(config.discord.webhookUrl);
+  const payload = JSON.stringify({
+    embeds: [{
+      title: title,
+      description: description,
+      color: color,
+      timestamp: new Date().toISOString()
+    }]
+  });
+
+  const options = {
+    hostname: url.hostname,
+    path: url.pathname + url.search,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload)
+    }
+  };
+
+  const req = https.request(options);
+  req.on('error', (e) => console.error(`[Discord Webhook Error]: ${e.message}`));
+  req.write(payload);
+  req.end();
+}
+
+// ============================================================
+// MINEFLAYER BOT CREATION & EVENT HANDLING
+// ============================================================
+let bot;
+
+function createBot() {
+  console.log(`[Bot] Connecting to ${config.server.ip}:${config.server.port}...`);
+
+  bot = mineflayer.createBot({
+    host: config.server.ip,
+    port: config.server.port,
+    username: config.botAccount ? config.botAccount.username : config["bot-account"].username,
+    version: config.server.version || false,
+    auth: 'offline'
+  });
+
+  // Load pathfinder plugin
+  bot.loadPlugin(pathfinder);
+
+  bot.once('spawn', () => {
+    botState.connected = true;
+    botState.reconnectAttempts = 0;
+    console.log(`[Bot] Successfully spawned in server as ${bot.username}`);
+
+    if (config.discord && config.discord.events && config.discord.events.connect) {
+      sendDiscordWebhook('Bot Connected', `Bot **${bot.username}** successfully connected to \`${config.server.ip}\`.`, 3066993);
+    }
+
+    // Auto-authentication (AuthMe support)
+    const autoAuth = config.utils ? config.utils['auto-auth'] : null;
+    if (autoAuth && autoAuth.enabled && autoAuth.password) {
+      setTimeout(() => {
+        bot.chat(`/register ${autoAuth.password} ${autoAuth.password}`);
+        bot.chat(`/login ${autoAuth.password}`);
+      }, 1500);
+    }
+
+    // Anti-AFK behaviors
+    startAntiAfkBehaviors();
+  });
+
+  bot.on('chat', (username, message) => {
+    if (username === bot.username) return;
+    if (config.utils && config.utils['chat-log']) {
+      console.log(`[Chat] <${username}> ${message}`);
+    }
+  });
+
+  bot.on('error', (err) => {
+    console.error(`[Bot Error] ${err.message}`);
+    botState.errors.push(err.message);
+  });
+
+  bot.on('end', (reason) => {
+    botState.connected = false;
+    console.log(`[Bot] Disconnected: ${reason}`);
+
+    if (config.discord && config.discord.events && config.discord.events.disconnect) {
+      sendDiscordWebhook('Bot Disconnected', `Bot disconnected from server. Reason: \`${reason}\``, 15158332);
+    }
+
+    // Handle auto-reconnect
+    const autoReconnect = config.utils ? config.utils['auto-reconnect'] : true;
+    if (autoReconnect) {
+      botState.reconnectAttempts++;
+      const delay = config.utils ? (config.utils['auto-reconnect-delay'] || 5000) : 5000;
+      console.log(`[Bot] Reconnecting in ${delay / 1000} seconds...`);
+      setTimeout(createBot, delay);
+    }
+  });
+}
+
+// ============================================================
+// ANTI-AFK UTILITIES
+// ============================================================
+function startAntiAfkBehaviors() {
+  const movement = config.movement;
+  const utils = config.utils;
+
+  // Sneak anti-AFK
+  if (utils && utils['anti-afk'] && utils['anti-afk'].enabled && utils['anti-afk'].sneak) {
+    setInterval(() => {
+      if (!bot || !botState.connected) return;
+      bot.setControlState('sneak', true);
+      setTimeout(() => bot.setControlState('sneak', false), 1000);
+    }, 4000);
+  }
+
+  // Random Jumping
+  if (movement && movement['random-jump'] && movement['random-jump'].enabled) {
+    setInterval(() => {
+      if (!bot || !botState.connected) return;
+      bot.setControlState('jump', true);
+      setTimeout(() => bot.setControlState('jump', false), 500);
+    }, movement['random-jump'].interval || 10000);
+  }
+
+  // Look Around
+  if (movement && movement['look-around'] && movement['look-around'].enabled) {
+    setInterval(() => {
+      if (!bot || !botState.connected) return;
+      const yaw = Math.random() * Math.PI * 2;
+      const pitch = (Math.random() - 0.5) * Math.PI;
+      bot.look(yaw, pitch, false);
+    }, movement['look-around'].interval || 5000);
+  }
+
+  // Repeating Chat Messages
+  if (utils && utils['chat-messages'] && utils['chat-messages'].enabled) {
+    const chatConfig = utils['chat-messages'];
+    let messageIndex = 0;
+    
+    setInterval(() => {
+      if (!bot || !botState.connected || !chatConfig.messages.length) return;
+      bot.chat(chatConfig.messages[messageIndex]);
+      messageIndex = (messageIndex + 1) % chatConfig.messages.length;
+    }, (chatConfig['repeat-delay'] || 30) * 1000);
+  }
+}
+
+// Start the bot
+createBot();
