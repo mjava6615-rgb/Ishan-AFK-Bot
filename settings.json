@@ -1,13 +1,13 @@
 {
   "name": "AFK Bot",
   "bot-account": {
-    "username": "Hasan86",
+    "username": "PerzaanLive",
     "password": "",
     "type": "offline"
   },
   "server": {
-    "ip": "minecartrealmsBD.aternos.me",
-    "port": 11927,
+    "ip": "Nexus_SMP_MC.aternos.me",
+    "port": 19478,
     "version": "1.21.1"
   },
   "position": {
