@@ -140,8 +140,16 @@ function sendDiscordWebhook(title, description, color = 3066993) {
 // ============================================================
 let bot;
 let reconnectTimeout = null;
+let activeIntervals = [];
+
+function clearAntiAfkIntervals() {
+  activeIntervals.forEach(clearInterval);
+  activeIntervals = [];
+}
 
 function createBot() {
+  clearAntiAfkIntervals();
+
   const username = config.botAccount ? config.botAccount.username : (config['bot-account'] ? config['bot-account'].username : 'Bot');
   console.log(`[Bot] Connecting to ${config.server.ip}:${config.server.port}...`);
 
@@ -159,3 +167,114 @@ function createBot() {
   bot.once('spawn', () => {
     botState.connected = true;
     botState.reconnectAttempts = 0;
+    console.log(`[Bot] Successfully spawned in server as ${bot.username}`);
+
+    // Initialize pathfinder default movements
+    const defaultMove = new Movements(bot);
+    bot.pathfinder.setMovements(defaultMove);
+
+    if (config.discord && config.discord.events && config.discord.events.connect) {
+      sendDiscordWebhook('Bot Connected', `Bot **${bot.username}** successfully connected to \`${config.server.ip}\`.`, 3066993);
+    }
+
+    // Auto-authentication (AuthMe support)
+    const autoAuth = config.utils ? config.utils['auto-auth'] : null;
+    if (autoAuth && autoAuth.enabled && autoAuth.password) {
+      setTimeout(() => {
+        bot.chat(`/register ${autoAuth.password}${autoAuth.password}`);
+        bot.chat(`/login ${autoAuth.password}`);
+      }, 1500);
+    }
+
+    // Anti-AFK behaviors
+    startAntiAfkBehaviors();
+  });
+
+  bot.on('chat', (username, message) => {
+    if (username === bot.username) return;
+    if (config.utils && config.utils['chat-log']) {
+      console.log(`[Chat] <${username}>${message}`);
+    }
+  });
+
+  bot.on('error', (err) => {
+    console.error(`[Bot Error] ${err.message}`);
+    botState.errors.push(err.message);
+  });
+
+  bot.on('end', (reason) => {
+    botState.connected = false;
+    clearAntiAfkIntervals();
+    console.log(`[Bot] Disconnected: ${reason}`);
+
+    if (config.discord && config.discord.events && config.discord.events.disconnect) {
+      sendDiscordWebhook('Bot Disconnected', `Bot disconnected from server. Reason: \`${reason}\``, 15158332);
+    }
+
+    // Prevent stacking multiple reconnect timers
+    if (reconnectTimeout) clearTimeout(reconnectTimeout);
+
+    const autoReconnect = config.utils ? config.utils['auto-reconnect'] : true;
+    if (autoReconnect) {
+      botState.reconnectAttempts++;
+      const delay = config.utils ? (config.utils['auto-reconnect-delay'] || 5000) : 5000;
+      console.log(`[Bot] Reconnecting in ${delay / 1000} seconds...`);
+      reconnectTimeout = setTimeout(createBot, delay);
+    }
+  });
+}
+
+// ============================================================
+// ANTI-AFK UTILITIES
+// ============================================================
+function startAntiAfkBehaviors() {
+  const movement = config.movement;
+  const utils = config.utils;
+
+  // Sneak anti-AFK
+  if (utils && utils['anti-afk'] && utils['anti-afk'].enabled && utils['anti-afk'].sneak) {
+    const id = setInterval(() => {
+      if (!bot || !botState.connected) return;
+      bot.setControlState('sneak', true);
+      setTimeout(() => bot && bot.setControlState('sneak', false), 1000);
+    }, 4000);
+    activeIntervals.push(id);
+  }
+
+  // Random Jumping
+  if (movement && movement['random-jump'] && movement['random-jump'].enabled) {
+    const id = setInterval(() => {
+      if (!bot || !botState.connected) return;
+      bot.setControlState('jump', true);
+      setTimeout(() => bot && bot.setControlState('jump', false), 500);
+    }, movement['random-jump'].interval || 10000);
+    activeIntervals.push(id);
+  }
+
+  // Look Around
+  if (movement && movement['look-around'] && movement['look-around'].enabled) {
+    const id = setInterval(() => {
+      if (!bot || !botState.connected) return;
+      const yaw = Math.random() * Math.PI * 2;
+      const pitch = (Math.random() - 0.5) * Math.PI;
+      bot.look(yaw, pitch, false);
+    }, movement['look-around'].interval || 5000);
+    activeIntervals.push(id);
+  }
+
+  // Repeating Chat Messages
+  if (utils && utils['chat-messages'] && utils['chat-messages'].enabled) {
+    const chatConfig = utils['chat-messages'];
+    let messageIndex = 0;
+
+    const id = setInterval(() => {
+      if (!bot || !botState.connected || !chatConfig.messages || !chatConfig.messages.length) return;
+      bot.chat(chatConfig.messages[messageIndex]);
+      messageIndex = (messageIndex + 1) % chatConfig.messages.length;
+    }, (chatConfig['repeat-delay'] || 30) * 1000);
+    activeIntervals.push(id);
+  }
+}
+
+// Start the bot
+createBot();
